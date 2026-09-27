@@ -880,6 +880,7 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                None,
             );
         }
     }
@@ -909,16 +910,7 @@ impl ElementCx<'_, '_> {
                 * Affine::translate((pos.x * self.scale - scroll_x, pos.y * self.scale - scroll_y));
 
             if self.node.is_focussed() {
-                // Render selection/caret
-                for (rect, _line_idx) in input_data.editor.selection_geometry().iter() {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        SELECTION_COLOR,
-                        None,
-                        &convert_rect(rect),
-                    );
-                }
+                // Render caret. The selection is drawn over the text, below.
                 if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
                     let color = self.style.get_inherited_text().color;
                     let caret_color = match &self.style.get_inherited_ui().caret_color.0 {
@@ -946,8 +938,50 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                None,
             );
+
+            // Moonowl: the selection is painted *over* the text, clipped to
+            // itself, so that the selected glyphs can take an ink of their own.
+            if self.node.is_focussed() {
+                let (area, ink) = self.selection_colors();
+                for (rect, _line_idx) in input_data.editor.selection_geometry().iter() {
+                    let rect = convert_rect(rect);
+                    scene.push_clip_layer(transform, &rect);
+                    scene.fill(Fill::NonZero, transform, area, None, &rect);
+                    crate::text::stroke_text(
+                        scene,
+                        input_data.editor.try_layout().unwrap().lines(),
+                        self.context.dom,
+                        transform,
+                        self.scale,
+                        self.node.id,
+                        &mut draw_text_context,
+                        ink,
+                    );
+                    scene.pop_layer();
+                }
+            }
         }
+    }
+
+    /// Moonowl: a text field's selection colours, from the custom properties
+    /// `--selection-background` and `--selection-color`, which stand in for
+    /// `::selection`. Absent, the fixed blue and the field's own ink.
+    fn selection_colors(&self) -> (Color, Option<Color>) {
+        let read = |name: &str| {
+            let value = self
+                .style
+                .custom_properties()
+                .inherited
+                .get(&style::Atom::from(name))?;
+            let css = value.as_universal()?.css_text().trim();
+            Some(::color::parse_color(css).ok()?.to_alpha_color::<::color::Srgb>())
+        };
+        (
+            read("selection-background").unwrap_or(SELECTION_COLOR),
+            read("selection-color"),
+        )
     }
 
     fn draw_marker(&self, scene: &mut impl PaintScene, pos: Point) {
@@ -994,6 +1028,7 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                None,
             );
         }
     }
