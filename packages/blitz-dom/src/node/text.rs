@@ -65,7 +65,18 @@ pub struct TextInputData {
     /// vertical offset. It is kept up to date so that the caret remains visible within the
     /// input's content box.
     pub scroll_offset: f32,
+    /// Earlier states of the text, and the caret or selection in each, for undo.
+    undo: Vec<(String, std::ops::Range<usize>)>,
+    /// States undone, for redo. Emptied by any new edit.
+    redo: Vec<(String, std::ops::Range<usize>)>,
+    /// Whether the last edit was typing, so that a run of typed characters —
+    /// until the caret moves or something else edits — is undone as one
+    /// step, as in a Mac text field.
+    typing: bool,
 }
+
+/// How many steps back undo reaches in one input.
+const UNDO_DEPTH: usize = 100;
 
 // FIXME: Implement Clone for PlainEditor
 impl Clone for TextInputData {
@@ -81,7 +92,60 @@ impl TextInputData {
             editor,
             is_multiline,
             scroll_offset: 0.0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: false,
         }
+    }
+
+    /// The text and selection, leaving out anything an input method is
+    /// still composing.
+    fn snapshot(&self) -> (String, std::ops::Range<usize>) {
+        let selection = match self.editor.raw_compose() {
+            Some(compose) => compose.start..compose.start,
+            None => self.editor.raw_selection().text_range(),
+        };
+        (self.editor.text().chars().collect(), selection)
+    }
+
+    /// After an edit: keep what was there before it, unless nothing changed
+    /// or it continues a run of typing.
+    fn remember(&mut self, before: (String, std::ops::Range<usize>), typing: bool) {
+        if self.editor.text() == before.0.as_str() {
+            // A caret moved: the run of typing is over.
+            self.typing = false;
+            return;
+        }
+        self.redo.clear();
+        if !(typing && self.typing) {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_DEPTH {
+                self.undo.remove(0);
+            }
+        }
+        self.typing = typing;
+    }
+
+    /// Undo, or redo: the text and selection as they were.
+    fn step(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        redo: bool,
+    ) -> Option<GeneratedTextInputEvent> {
+        let (text, selection) = if redo { self.redo.pop() } else { self.undo.pop() }?;
+        let now = self.snapshot();
+        if redo {
+            self.undo.push(now);
+        } else {
+            self.redo.push(now);
+        }
+        self.typing = false;
+        self.editor.set_text(&text);
+        let mut driver = self.editor.driver(font_ctx, layout_ctx);
+        driver.refresh_layout();
+        driver.select_byte_range(selection.start, selection.end);
+        Some(GeneratedTextInputEvent::Input)
     }
 
     pub fn set_text(
@@ -91,6 +155,11 @@ impl TextInputData {
         text: &str,
     ) {
         if self.editor.text() != text {
+            // A value set by the page rather than typed: the states kept are
+            // of text that is no longer there.
+            self.undo.clear();
+            self.redo.clear();
+            self.typing = false;
             self.editor.set_text(text);
             self.editor.driver(font_ctx, layout_ctx).refresh_layout();
         }
@@ -193,6 +262,37 @@ impl TextInputData {
     }
 
     pub(crate) fn apply_keypress_event(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        shell_provider: &dyn ShellProvider,
+        event: BlitzKeyEvent,
+    ) -> Option<GeneratedTextInputEvent> {
+        if !event.state.is_pressed() {
+            return None;
+        }
+        let mods = event.modifiers;
+        if mods.contains(ACTION_MOD) {
+            if let Key::Character(c) = &event.key {
+                match c.to_lowercase().as_str() {
+                    "z" => return self.step(font_ctx, layout_ctx, mods.contains(Modifiers::SHIFT)),
+                    #[cfg(not(target_os = "macos"))]
+                    "y" => return self.step(font_ctx, layout_ctx, true),
+                    _ => {}
+                }
+            }
+        }
+        let typing = matches!(&event.key, Key::Character(c)
+            if !mods.contains(Modifiers::CONTROL)
+                && !mods.contains(Modifiers::SUPER)
+                && c != "\n");
+        let before = self.snapshot();
+        let generated = self.apply_edit_key(font_ctx, layout_ctx, shell_provider, event);
+        self.remember(before, typing);
+        generated
+    }
+
+    fn apply_edit_key(
         &mut self,
         font_ctx: &mut FontContext,
         layout_ctx: &mut LayoutContext<TextBrush>,
@@ -363,6 +463,19 @@ impl TextInputData {
     }
 
     pub(crate) fn apply_apple_standard_keybinding(
+        &mut self,
+        font_ctx: &mut FontContext,
+        layout_ctx: &mut LayoutContext<TextBrush>,
+        shell_provider: &dyn ShellProvider,
+        command: &str,
+    ) -> Option<GeneratedTextInputEvent> {
+        let before = self.snapshot();
+        let generated = self.apply_apple_binding(font_ctx, layout_ctx, shell_provider, command);
+        self.remember(before, false);
+        generated
+    }
+
+    fn apply_apple_binding(
         &mut self,
         font_ctx: &mut FontContext,
         layout_ctx: &mut LayoutContext<TextBrush>,
@@ -759,6 +872,17 @@ impl TextInputData {
         layout_ctx: &mut LayoutContext<TextBrush>,
         event: BlitzImeEvent,
     ) -> Option<GeneratedTextInputEvent> {
+        // On macOS ordinary typing arrives as a commit, so it is kept for
+        // undo as typing is.
+        if let BlitzImeEvent::Commit(text) = &event {
+            let before = self.snapshot();
+            let typing = !text.is_empty();
+            self.editor
+                .driver(font_ctx, layout_ctx)
+                .insert_or_replace_selection(text);
+            self.remember(before, typing);
+            return Some(GeneratedTextInputEvent::Input);
+        }
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
 
