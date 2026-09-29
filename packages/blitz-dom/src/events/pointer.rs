@@ -240,6 +240,9 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
                                         }
                                     }
                                 }
+                            } else {
+                                // `text` and `all` ask for exactly this.
+                                doc.drag_mode = DragMode::Selecting;
                             }
                         }
                     }
