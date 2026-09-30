@@ -884,6 +884,7 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
     let editor = &mut text_input_data.editor;
     editor.set_scale(doc.viewport.scale_f64() as f32);
     editor.set_width(None);
+    text_input_data.wrap_width = None;
 
     let styles = editor.edit_styles();
     styles.retain(|_| false);

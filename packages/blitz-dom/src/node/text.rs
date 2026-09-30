@@ -73,6 +73,10 @@ pub struct TextInputData {
     /// until the caret moves or something else edits — is undone as one
     /// step, as in a Mac text field.
     typing: bool,
+    /// The width a multi-line input's text wraps at, in device pixels: its
+    /// content box, as of the last layout. `None` until then, and for a
+    /// single-line input, which never wraps.
+    pub wrap_width: Option<f32>,
 }
 
 /// How many steps back undo reaches in one input.
@@ -95,6 +99,7 @@ impl TextInputData {
             undo: Vec::new(),
             redo: Vec::new(),
             typing: false,
+            wrap_width: None,
         }
     }
 

@@ -393,6 +393,32 @@ impl BaseDocument {
         taffy::compute_root_layout(self, root_element_id, available_space);
         taffy::round_layout(self, root_element_id);
 
+        // Moonowl: a textarea wraps its text at its content box, as a browser's
+        // does. Its editor was given no width, so a line ran on past the edge
+        // until the next newline, and a multi-line input cannot scroll across.
+        let scale = self.viewport.scale_f64() as f32;
+        let mut font_ctx = self.font_ctx.lock().unwrap();
+        for (_, node) in self.nodes.iter_mut() {
+            let multiline = node
+                .element_data()
+                .and_then(|el| el.text_input_data())
+                .is_some_and(|input| input.is_multiline);
+            if !multiline {
+                continue;
+            }
+            let width = node.final_layout().content_box_width() * scale;
+            let input = node
+                .element_data_mut()
+                .and_then(|el| el.text_input_data_mut())
+                .unwrap();
+            if input.wrap_width == Some(width) {
+                continue;
+            }
+            input.wrap_width = Some(width);
+            input.editor.set_width(Some(width));
+            input.editor.refresh_layout(&mut font_ctx, &mut self.layout_ctx);
+        }
+
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)
     }
