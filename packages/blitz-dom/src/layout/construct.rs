@@ -869,8 +869,14 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
         .map(|s| stylo_to_parley::base_direction(s.clone_direction(), s.clone_unicode_bidi()))
         .unwrap_or(parley::BaseDirection::Auto);
 
+    // Moonowl: a textarea given a `value` (which is how Dioxus writes one)
+    // starts from it; its contents are only the fallback. A `value` set
+    // before the editor exists is only an attribute, and was lost.
     let initial_text = if is_multiline {
-        node.text_content()
+        match node.attr(local_name!("value")) {
+            Some(value) => value.to_string(),
+            None => node.text_content(),
+        }
     } else {
         node.attr(local_name!("value")).unwrap_or("").to_string()
     };
