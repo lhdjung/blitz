@@ -29,6 +29,17 @@ pub(crate) fn qual_name(local_name: &str, namespace: Option<&str>) -> QualName {
     }
 }
 
+/// An attribute's name. Unlike an element, an HTML attribute is in no
+/// namespace, and since attribute selectors match on the namespace an
+/// attribute put in the HTML one matched no `[data-…]` selector at all.
+pub(crate) fn attr_name(local_name: &str, namespace: Option<&str>) -> QualName {
+    QualName {
+        prefix: None,
+        ns: namespace.map(Namespace::from).unwrap_or(ns!()),
+        local: LocalName::from(local_name),
+    }
+}
+
 // Syntax sugar to make tracing calls less noisy in function below
 macro_rules! trace {
     ($pattern:literal) => {{
