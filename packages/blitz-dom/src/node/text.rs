@@ -133,7 +133,11 @@ impl TextInputData {
         layout_ctx: &mut LayoutContext<TextBrush>,
         redo: bool,
     ) -> Option<GeneratedTextInputEvent> {
-        let (text, selection) = if redo { self.redo.pop() } else { self.undo.pop() }?;
+        let (text, selection) = if redo {
+            self.redo.pop()
+        } else {
+            self.undo.pop()
+        }?;
         let now = self.snapshot();
         if redo {
             self.undo.push(now);

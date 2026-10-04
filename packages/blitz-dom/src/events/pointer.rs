@@ -503,7 +503,22 @@ pub(crate) fn handle_pointerdown(
         ClickTarget::SelectableText => {
             // Handle text selection for non-input elements
             if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
-                doc.set_text_selection(inline_root_id, byte_offset, inline_root_id, byte_offset);
+                // Moonowl: a second press selects the word, a third the
+                // paragraph, wherever words can be selected at all.
+                let (start, end) = if doc.click_count > 1 && selectable(doc, actual_target) {
+                    let text = doc.nodes[inline_root_id]
+                        .element_data()
+                        .and_then(|el| el.inline_layout_data.as_ref())
+                        .map_or("", |layout| layout.text.as_str());
+                    if doc.click_count == 2 {
+                        word_at(text, byte_offset)
+                    } else {
+                        (0, text.len())
+                    }
+                } else {
+                    (byte_offset, byte_offset)
+                };
+                doc.set_text_selection(inline_root_id, start, inline_root_id, end);
                 doc.shell_provider.request_redraw();
             } else {
                 doc.clear_text_selection();
@@ -553,6 +568,58 @@ pub(crate) fn handle_pointerdown(
             );
         }
     }
+}
+
+/// Moonowl: whether a node's words can be selected — the first `user-select`
+/// on the way up that says anything, and yes where nothing does.
+fn selectable(doc: &BaseDocument, node_id: NodeId) -> bool {
+    let mut next = Some(node_id);
+    while let Some(id) = next {
+        let node = &doc.nodes[id];
+        if let Some(style) = node.primary_styles() {
+            match style.clone_user_select() {
+                UserSelect::None => return false,
+                UserSelect::Auto => {}
+                _ => return true,
+            }
+        }
+        next = node.parent;
+    }
+    true
+}
+
+/// Moonowl: the run of word, space or punctuation characters around a byte
+/// offset — what a double-click selects.
+fn word_at(text: &str, at: usize) -> (usize, usize) {
+    let kind = |c: char| {
+        if c.is_alphanumeric() || matches!(c, '_' | '\'' | '’') {
+            0
+        } else if c.is_whitespace() {
+            1
+        } else {
+            2
+        }
+    };
+    let at = at.min(text.len());
+    let Some(here) = text[at..]
+        .chars()
+        .next()
+        .or_else(|| text[..at].chars().next_back())
+    else {
+        return (at, at);
+    };
+    let start = text[..at]
+        .char_indices()
+        .rev()
+        .take_while(|&(_, c)| kind(c) == kind(here))
+        .last()
+        .map_or(at, |(i, _)| i);
+    let end = text[at..]
+        .char_indices()
+        .take_while(|&(_, c)| kind(c) == kind(here))
+        .last()
+        .map_or(at, |(i, c)| at + i + c.len_utf8());
+    (start, end)
 }
 
 pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
@@ -848,5 +915,45 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     );
     if has_changed {
         doc.shell_provider.request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod moonowl_tests {
+    use super::word_at;
+
+    #[test]
+    fn a_double_click_takes_the_word_it_lands_in() {
+        let text = "Take the light theme, it's late.";
+        assert_eq!(
+            &text[{
+                let (a, b) = word_at(text, 11);
+                a..b
+            }],
+            "light"
+        );
+        assert_eq!(
+            &text[{
+                let (a, b) = word_at(text, 9);
+                a..b
+            }],
+            "light"
+        );
+        assert_eq!(
+            &text[{
+                let (a, b) = word_at(text, 23);
+                a..b
+            }],
+            "it's"
+        );
+        assert_eq!(
+            &text[{
+                let (a, b) = word_at(text, 20);
+                a..b
+            }],
+            ","
+        );
+        assert_eq!(word_at(text, text.len()), (text.len() - 1, text.len()));
+        assert_eq!(word_at("", 0), (0, 0));
     }
 }

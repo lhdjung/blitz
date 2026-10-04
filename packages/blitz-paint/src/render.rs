@@ -859,17 +859,6 @@ impl ElementCx<'_, '_> {
                 self.node.id,
             );
 
-            // Render text selection highlight (if any) using cached selection ranges
-            if let Some(&(sel_start, sel_end)) = self.context.selection_ranges.get(&self.node.id) {
-                crate::text::draw_text_selection(
-                    scene,
-                    &text_layout.layout,
-                    transform,
-                    sel_start,
-                    sel_end,
-                );
-            }
-
             // Render text
             let mut draw_text_context = self.context.draw_text_context.borrow_mut();
             crate::text::stroke_text(
@@ -882,6 +871,29 @@ impl ElementCx<'_, '_> {
                 &mut draw_text_context,
                 None,
             );
+
+            // Moonowl: the selection (if any, from the cached ranges) is
+            // painted over the text, clipped to itself, in the colours a
+            // field's selection takes — so selected words have an ink of
+            // their own on any ground.
+            if let Some(&(sel_start, sel_end)) = self.context.selection_ranges.get(&self.node.id) {
+                let (area, ink) = self.selection_colors();
+                for rect in crate::text::selection_rects(&text_layout.layout, sel_start, sel_end) {
+                    scene.push_clip_layer(transform, &rect);
+                    scene.fill(Fill::NonZero, transform, area, None, &rect);
+                    crate::text::stroke_text(
+                        scene,
+                        text_layout.layout.lines(),
+                        self.context.dom,
+                        transform,
+                        self.scale,
+                        self.node.id,
+                        &mut draw_text_context,
+                        ink,
+                    );
+                    scene.pop_layer();
+                }
+            }
         }
     }
 
@@ -965,9 +977,9 @@ impl ElementCx<'_, '_> {
         }
     }
 
-    /// Moonowl: a text field's selection colours, from the custom properties
+    /// Moonowl: a selection's colours, in a field or out of one, from the custom properties
     /// `--selection-background` and `--selection-color`, which stand in for
-    /// `::selection`. Absent, the fixed blue and the field's own ink.
+    /// `::selection`. Absent, the fixed blue and the text's own ink.
     fn selection_colors(&self) -> (Color, Option<Color>) {
         let read = |name: &str| {
             let value = self
@@ -976,7 +988,11 @@ impl ElementCx<'_, '_> {
                 .inherited
                 .get(&style::Atom::from(name))?;
             let css = value.as_universal()?.css_text().trim();
-            Some(::color::parse_color(css).ok()?.to_alpha_color::<::color::Srgb>())
+            Some(
+                ::color::parse_color(css)
+                    .ok()?
+                    .to_alpha_color::<::color::Srgb>(),
+            )
         };
         (
             read("selection-background").unwrap_or(SELECTION_COLOR),
