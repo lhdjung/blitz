@@ -593,6 +593,15 @@ impl BaseDocument {
             return LayoutOutput::from_outer_size(clamped_size);
         }
 
+        // Moonowl: a measurement breaks the lines to measure them, and then
+        // puts back the lines the last layout broke, which are the ones
+        // painted. Taffy can answer that layout from its cache without
+        // calling this again, and the text was then painted wrapped at the
+        // width it was last measured at, over a box the height of the lines
+        // it was laid out in.
+        let laid_out = (inputs.run_mode == taffy::RunMode::ComputeSize)
+            .then(|| inline_layout.layout.clone());
+
         #[cfg(not(feature = "floats"))]
         {
             inline_layout.layout.break_all_lines(Some(width));
@@ -984,6 +993,10 @@ impl BaseDocument {
             .then(|| last_line_index.and_then(|i| inline_layout.layout.get(i)))
             .flatten()
             .map(line_baseline);
+
+        if let Some(laid_out) = laid_out {
+            inline_layout.layout = laid_out;
+        }
 
         // Put layout back
         self.nodes[node_id]
