@@ -72,6 +72,13 @@ impl BaseDocument {
             }
         }
 
+        // Moonowl: an anonymous block takes its style from this node when it
+        // is built, and nothing else restyles it — so bare text in a flex
+        // container kept the colour it was built in after the node's changed.
+        if !damage.is_empty() {
+            self.restyle_anonymous_blocks(node_id);
+        }
+
         let mut damage_from_children = RestyleDamage::empty();
         let children = std::mem::take(&mut self.nodes[node_id].children);
         for child in children.iter() {
@@ -178,6 +185,38 @@ impl BaseDocument {
 
         // Propagate damage to parent
         damage_for_parent
+    }
+
+    /// Moonowl: give `node_id`'s anonymous blocks, and theirs, the style
+    /// they would be built with now. See `create_anonymous_block`.
+    fn restyle_anonymous_blocks(&mut self, node_id: NodeId) {
+        use style::selector_parser::PseudoElement;
+        use style::shared_lock::StylesheetGuards;
+
+        let blocks = self.nodes[node_id].anonymous_blocks.clone();
+        if blocks.is_empty() {
+            return;
+        }
+        let Some(parent_style) = self.nodes[node_id].primary_styles().map(|s| s.clone()) else {
+            return;
+        };
+        let read_guard = self.guard.read();
+        let guards = StylesheetGuards::same(&read_guard);
+        let style = self.stylist.style_for_anonymous::<&crate::Node>(
+            &guards,
+            &PseudoElement::ServoAnonymousBox,
+            &parent_style,
+        );
+        drop(read_guard);
+        for anon_id in blocks {
+            if let Some(mut data) = self.nodes[anon_id]
+                .try_stylo_element_data_mut()
+                .and_then(|s| s.get_mut())
+            {
+                data.styles.primary = Some(style.clone());
+            }
+            self.restyle_anonymous_blocks(anon_id);
+        }
     }
 
     /// Mark every node in the document with `ALL_DAMAGE` (non-incremental
