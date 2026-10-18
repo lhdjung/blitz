@@ -3,7 +3,7 @@ use blitz_traits::{
     node_id::NodeId,
     shell::ShellProvider,
 };
-use keyboard_types::{Key, Modifiers};
+use keyboard_types::{Code, Key, Modifiers};
 use parley::{ContentWidths, FontContext, LayoutContext};
 
 use crate::util::ACTION_MOD;
@@ -277,13 +277,11 @@ impl TextInputData {
         }
         let mods = event.modifiers;
         if mods.contains(ACTION_MOD) {
-            if let Key::Character(c) = &event.key {
-                match c.to_lowercase().as_str() {
-                    "z" => return self.step(font_ctx, layout_ctx, mods.contains(Modifiers::SHIFT)),
-                    #[cfg(not(target_os = "macos"))]
-                    "y" => return self.step(font_ctx, layout_ctx, true),
-                    _ => {}
-                }
+            match shortcut_letter(&event) {
+                Some('z') => return self.step(font_ctx, layout_ctx, mods.contains(Modifiers::SHIFT)),
+                #[cfg(not(target_os = "macos"))]
+                Some('y') => return self.step(font_ctx, layout_ctx, true),
+                _ => {}
             }
         }
         let typing = matches!(&event.key, Key::Character(c)
@@ -313,23 +311,24 @@ impl TextInputData {
         let action_mod = mods.contains(ACTION_MOD);
 
         let is_multiline = self.is_multiline;
+        let letter = shortcut_letter(&event).filter(|_| action_mod);
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
         match event.key {
-            Key::Character(c) if action_mod && matches!(c.as_str(), "c" | "x" | "v") => {
-                match c.to_lowercase().as_str() {
-                    "c" => {
+            _ if matches!(letter, Some('c' | 'x' | 'v')) => {
+                match letter {
+                    Some('c') => {
                         if let Some(text) = driver.editor.selected_text() {
                             let _ = shell_provider.set_clipboard_text(text.to_owned());
                         }
                     }
-                    "x" => {
+                    Some('x') => {
                         if let Some(text) = driver.editor.selected_text() {
                             let _ = shell_provider.set_clipboard_text(text.to_owned());
                             driver.delete_selection()
                         }
                     }
-                    "v" => {
+                    Some('v') => {
                         let text = shell_provider.get_clipboard_text().unwrap_or_default();
                         driver.insert_or_replace_selection(&text)
                     }
@@ -338,7 +337,7 @@ impl TextInputData {
 
                 return Some(GeneratedTextInputEvent::Input);
             }
-            Key::Character(c) if action_mod && matches!(c.to_lowercase().as_str(), "a") => {
+            _ if letter == Some('a') => {
                 if shift {
                     driver.collapse_selection()
                 } else {
@@ -921,5 +920,28 @@ impl TextInputData {
                 None
             }
         }
+    }
+}
+
+/// The letter a shortcut is read as: the character typed, or the physical
+/// key's letter where the layout types no Latin letter there. On a Cyrillic
+/// layout, Command and Z type "я", and the shortcut is still undo.
+fn shortcut_letter(event: &BlitzKeyEvent) -> Option<char> {
+    if let Key::Character(c) = &event.key {
+        let mut chars = c.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if c.is_ascii_alphabetic() {
+                return Some(c.to_ascii_lowercase());
+            }
+        }
+    }
+    match event.code {
+        Code::KeyA => Some('a'),
+        Code::KeyC => Some('c'),
+        Code::KeyV => Some('v'),
+        Code::KeyX => Some('x'),
+        Code::KeyY => Some('y'),
+        Code::KeyZ => Some('z'),
+        _ => None,
     }
 }
