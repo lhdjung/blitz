@@ -259,6 +259,9 @@ pub struct BaseDocument {
     pub(crate) hover_hit_node_id: Option<NodeId>,
     /// Whether the node which is currently hovered is a text node/span
     pub(crate) hover_node_is_text: bool,
+    /// The cursor last handed to the shell, so that a change of style under a
+    /// still pointer (such as `cursor: none` being set) reaches the shell too.
+    pub(crate) hover_cursor: Option<CursorIcon>,
     /// The last known pointer position in client coordinates (viewport-relative, unscrolled).
     pub(crate) last_client_pointer_position: Option<taffy::Point<f32>>,
     /// The node which is currently focussed (if any)
@@ -464,6 +467,7 @@ impl BaseDocument {
             hover_node_id: None,
             hover_hit_node_id: None,
             hover_node_is_text: false,
+            hover_cursor: None,
             last_client_pointer_position: None,
             focus_node_id: None,
             active_node_id: None,
@@ -1853,11 +1857,12 @@ impl BaseDocument {
 
         // Return early if the new node is the same as the already-hovered node
         if hover_node_id == self.hover_node_id {
-            if hit_changed {
-                // The canonical target is unchanged (so no restyle is needed)
-                // but the precise hit node changed, which can change the cursor
-                // (e.g. moving between text and non-text within one element).
-                self.shell_provider.set_cursor(self.get_cursor());
+            // The canonical target is unchanged (so no restyle is needed), but
+            // the precise hit node may have changed (e.g. moving between text
+            // and non-text within one element), or the cursor style of the
+            // same node may have changed. Either can change the cursor.
+            if hit_changed || self.get_cursor() != self.hover_cursor {
+                self.send_cursor();
             }
             return scrollbar_changed;
         }
@@ -1879,7 +1884,7 @@ impl BaseDocument {
         self.hover_node_id = hover_node_id;
 
         // Update the cursor
-        self.shell_provider.set_cursor(self.get_cursor());
+        self.send_cursor();
 
         // Request redraw
         self.shell_provider.request_redraw();
@@ -1906,7 +1911,7 @@ impl BaseDocument {
         self.hover_node_is_text = false;
 
         // Update the cursor
-        self.shell_provider.set_cursor(self.get_cursor());
+        self.send_cursor();
 
         // Request redraw
         self.shell_provider.request_redraw();
@@ -2142,6 +2147,11 @@ impl BaseDocument {
     pub fn stylist_device(&mut self) -> &Device {
         self.flush_pending_device_changes();
         self.stylist.device()
+    }
+
+    fn send_cursor(&mut self) {
+        self.hover_cursor = self.get_cursor();
+        self.shell_provider.set_cursor(self.hover_cursor);
     }
 
     pub fn get_cursor(&self) -> Option<CursorIcon> {
@@ -3023,6 +3033,43 @@ mod hover_invalidation_tests {
             "{:?}",
             doc.nodes[id].primary_styles().unwrap().clone_color()
         )
+    }
+
+    /// A cursor style that changes under a still pointer reaches the shell
+    /// when hover is next resolved, although the hovered node is the same.
+    #[test]
+    fn a_cursor_style_change_under_a_still_pointer_reaches_the_shell() {
+        #[derive(Default)]
+        struct Cursors(Mutex<Vec<Option<CursorIcon>>>);
+        impl ShellProvider for Cursors {
+            fn set_cursor(&self, icon: Option<CursorIcon>) {
+                self.0.lock().unwrap().push(icon);
+            }
+        }
+        let (mut doc, div, _) = make_doc();
+        let cursors = Arc::new(Cursors::default());
+        doc.set_shell_provider(cursors.clone());
+        let last = || *cursors.0.lock().unwrap().last().unwrap();
+
+        doc.set_hover_to(10.0, 10.0);
+        let shown = last();
+        assert!(shown.is_some());
+
+        let mut mutator = doc.mutate();
+        mutator.set_attribute(
+            div,
+            qual_name!("style"),
+            "width:300px;height:100px;cursor:none",
+        );
+        drop(mutator);
+        doc.resolve(0.0);
+        assert_eq!(last(), None, "the pointer is hidden");
+
+        let mut mutator = doc.mutate();
+        mutator.set_attribute(div, qual_name!("style"), "width:300px;height:100px");
+        drop(mutator);
+        doc.resolve(0.0);
+        assert_eq!(last(), shown, "and shown again");
     }
 
     #[test]
