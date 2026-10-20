@@ -1386,6 +1386,9 @@ impl Node {
         if matches_hoisted_content {
             if let Some(hoisted) = &self.stacking_context {
                 for hoisted_child in hoisted.pos_z_hoisted_children().rev() {
+                    if self.tree().get(hoisted_child.node_id).is_none() {
+                        continue;
+                    }
                     let pos = hoisted_child.position(self.tree(), self.id);
                     let x = x - pos.x;
                     let y = y - pos.y;
@@ -1400,8 +1403,16 @@ impl Node {
         }
 
         // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
+        //
+        // The paint tree is only rebuilt by `resolve`, so a pointer event that
+        // arrives after a mutation and before the next resolve can find nodes
+        // here (and among the hoisted children above) that have been removed
+        // from the document. They cannot be under the pointer, so they are
+        // skipped.
         for child_id in self.paint_children.borrow().iter().flatten().rev() {
-            let child = self.with(*child_id);
+            let Some(child) = self.tree().get(*child_id) else {
+                continue;
+            };
             let child_position = child.taffy_position();
             let mut child_x = x;
             let mut child_y = y;
@@ -1433,6 +1444,9 @@ impl Node {
         if matches_hoisted_content {
             if let Some(hoisted) = &self.stacking_context {
                 for hoisted_child in hoisted.neg_z_hoisted_children().rev() {
+                    if self.tree().get(hoisted_child.node_id).is_none() {
+                        continue;
+                    }
                     let pos = hoisted_child.position(self.tree(), self.id);
                     let x = x - pos.x;
                     let y = y - pos.y;

@@ -161,10 +161,16 @@ impl StackingContext {
             }
         };
 
+        // A child removed since the paint tree was built (see `hit_inner`)
+        // takes up no room.
+        let mut children = self
+            .children
+            .iter()
+            .filter(|child| tree.get(child.node_id).is_some());
         let mut area = Rect::ZERO;
-        if let Some((first, rest)) = self.children.split_first() {
+        if let Some(first) = children.next() {
             area = child_rect(first);
-            for child in rest {
+            for child in children {
                 let pos = child_rect(child);
                 area.left = area.left.min(pos.left);
                 area.top = area.top.min(pos.top);

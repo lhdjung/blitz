@@ -3447,3 +3447,65 @@ mod font_face_override_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod stale_paint_tree_tests {
+    use super::*;
+    use crate::{Attribute, qual_name};
+    use blitz_traits::shell::ColorScheme;
+
+    /// A pointer event can arrive between a mutation and the next resolve, so
+    /// hit testing meets a paint tree that still names removed nodes: here a
+    /// block in flow and a positioned one hoisted into the body's stacking
+    /// context. Neither may be looked up, and neither can be hit.
+    #[test]
+    fn hit_testing_skips_nodes_removed_since_the_last_resolve() {
+        let mut doc = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        let root_id = doc.root_node().id;
+        let style = |value: &str| Attribute {
+            name: qual_name!("style"),
+            value: value.to_string(),
+        };
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html"), vec![style("display:block")]);
+        let body = mutator.create_element(
+            qual_name!("body"),
+            vec![style(
+                "display:block; margin:0; position:relative; z-index:1",
+            )],
+        );
+        let block = mutator.create_element(
+            qual_name!("div"),
+            vec![style("display:block; height:100px")],
+        );
+        let raised = mutator.create_element(
+            qual_name!("div"),
+            vec![style(
+                "display:block; position:relative; z-index:1; height:50px",
+            )],
+        );
+        mutator.append_children(block, &[raised]);
+        mutator.append_children(body, &[block]);
+        mutator.append_children(html, &[body]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        doc.resolve(0.0);
+        let before = doc.hit(10.0, 10.0).map(|hit| hit.node_id);
+        assert_eq!(
+            before,
+            Some(raised),
+            "html {html} body {body} block {block}"
+        );
+
+        doc.mutate().remove_and_drop_node(block);
+        for y in (0..300).step_by(10) {
+            for x in (0..400).step_by(10) {
+                let hit = doc.hit(x as f32, y as f32);
+                assert!(hit.is_none_or(|hit| hit.node_id != block && hit.node_id != raised));
+            }
+        }
+    }
+}
